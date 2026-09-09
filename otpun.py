@@ -3,7 +3,7 @@
 ══════════════════════════════════════════════════════
   OTP PANEL BOT — PRIVATE ADMIN EDITION           
   Railway Cloud Optimized + Dummy Web Server + 24/7 Alive
-  Live Cancel Scan + Multi-Reply (Concurrent) Fixed
+  Live Lazy-Loading (No Waiting) + Extreme Anti-OOM
   Credit/Configured by: Gemini AI
 ══════════════════════════════════════════════════════
 """
@@ -48,7 +48,9 @@ POLL_INTERVAL   = 3
 PAGE_SIZE       = 20    
 TOKEN           = os.getenv("BOT_TOKEN", "8751858624:AAHAA2jMVScmhYECFtLVQ-q89ImsXh6mct8")
 BOT_USERNAME    = "fjjhfbot"
-CHUNK_SIZE      = 150 
+
+# 🔥 FIX: Drastically reduced for 500MB Railway RAM limit
+CHUNK_SIZE      = 15 
 
 ADMIN_IDS: set[int] = {
     6860106371,   
@@ -87,7 +89,8 @@ SETTINGS = {
 }
 
 API_LOCK = asyncio.Lock()
-WORKER_SEMAPHORE = asyncio.Semaphore(1500) 
+# 🔥 FIX: Lowered semaphore to prevent AIOHTTP memory spikes
+WORKER_SEMAPHORE = asyncio.Semaphore(20) 
 PREFETCH_POOL: dict[str, list] = {}
 PREFETCH_TASKS: dict[str, asyncio.Task] = {}
 
@@ -121,6 +124,7 @@ def load_local_txt_dbs():
         "All_Normal_URLs.txt", 
         os.path.join("Extracted_URLs", "All_Normal_URLs.txt")
     ]
+    
     for path in files_to_check:
         if os.path.exists(path):
             try:
@@ -129,7 +133,9 @@ def load_local_txt_dbs():
                         url = line.strip()
                         if url.startswith("http"):
                             loaded_urls.add(url)
-            except Exception: pass
+            except Exception:
+                pass
+                
     print(f"✅ Loaded {len(loaded_urls)} URLs from Local Text DBs")
     return list(loaded_urls)
 
@@ -165,6 +171,7 @@ def init_dirs():
 def load_data():
     global all_users, SETTINGS, DATABASES
     init_dirs()
+    
     local_dbs = load_local_txt_dbs()
     if local_dbs:
          existing_global = set(SETTINGS.get("global_panels", []))
@@ -271,7 +278,6 @@ def get_user_dbs(uinfo: dict) -> list:
         valid_urls.append(uinfo["custom_db"])
     return list(set(valid_urls))
 
-# 🔥 FIX: Reduced spam timeout to 0.2s for multi-reply support
 def is_spamming(user_id: int) -> bool:
     if user_id in ADMIN_IDS: return False
     now = time.time()
@@ -304,7 +310,7 @@ async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYP
 async def get_http_session() -> aiohttp.ClientSession:
     global _http_session
     if _http_session is None or _http_session.closed:
-        connector = aiohttp.TCPConnector(limit=500, keepalive_timeout=30, enable_cleanup_closed=True)
+        connector = aiohttp.TCPConnector(limit=300, keepalive_timeout=30, enable_cleanup_closed=True)
         _http_session = aiohttp.ClientSession(connector=connector)
     return _http_session
 
@@ -395,52 +401,6 @@ async def verify_recent_sms(device, max_age_sec=1800) -> tuple[bool, float]:
     except: pass
     return False, 0.0
 
-async def continuous_prefetch_worker(service: str):
-    while True:
-        try:
-            pool = PREFETCH_POOL.setdefault(service, [])
-            if len(pool) >= 5: 
-                await asyncio.sleep(5)
-                continue
-                
-            all_devices = GLOBAL_DEVICE_CACHE.get("ALL", [])
-            if not all_devices:
-                await asyncio.sleep(5)
-                continue
-                
-            fresh_devices = []
-            for d in all_devices:
-                if d.status == "online" and d.numbers:
-                    is_valid, last_ts = await verify_recent_sms(d, max_age_sec=1800) 
-                    if is_valid:
-                        d.last_sms_ts = last_ts
-                        fresh_devices.append(d)
-                        
-            if not fresh_devices:
-                await asyncio.sleep(10)
-                continue
-                
-            random.shuffle(fresh_devices)
-            in_pool_nums = {item["num"] for item in pool}
-            
-            for d in fresh_devices[:30]:
-                num = d.numbers[0]
-                if num in in_pool_nums: continue
-                seen = False
-                for cid, s_set in user_seen_unreg.items():
-                    if num in s_set: seen = True
-                if seen: continue
-                    
-                res = await check_number_api(service, num)
-                if isinstance(res, dict) and not res.get("status") == "error":
-                    is_reg = res.get("registered", False) or res.get("is_registered", False) or (str(res.get("result", "")).lower() == "registered")
-                    if not is_reg:
-                        pool.append({"device": d, "res": res, "num": num})
-                        break 
-                await asyncio.sleep(0.5)
-        except Exception: pass
-        await asyncio.sleep(3)
-
 # ═══════════════════════════════════════════════════════
 #  UTILITY FORMATTERS & MENUS
 # ═══════════════════════════════════════════════════════
@@ -473,13 +433,21 @@ def device_label(d: Device) -> str:
     if d.numbers: return " & ".join(d.numbers)
     return f"{d.name} ({d.id[:8]})"
 
+# 🔥 FIX: Added Live Sync Tracker directly in Header
 def device_list_header(devices: list[Device], page: int = 0) -> str:
     online  = sum(1 for d in devices if d.status == "online")
     offline = len(devices) - online
     total_pages = max(1, (len(devices) + PAGE_SIZE - 1) // PAGE_SIZE)
+    
+    sync_status = ""
+    if scan_progress.get("is_scanning"):
+        scanned = scan_progress.get("scanned", 0)
+        total = scan_progress.get("total", 0)
+        sync_status = f"\n⚠️ **Live Syncing:** {scanned}/{total} DBs loaded..."
+        
     return (
         f"OTP PANEL PRO\n━━━━━━━━━━━━━━━━━━\nOnline: {online}   Offline: {offline}\n"
-        f"Total: {len(devices)} Devices\nPage {page + 1} of {total_pages}\n━━━━━━━━━━━━━━━━━━\nSelect a number below:"
+        f"Total: {len(devices)} Devices\nPage {page + 1} of {total_pages}{sync_status}\n━━━━━━━━━━━━━━━━━━\nSelect a number below:"
     )
 
 def device_list_keyboard(devices: list[Device], page: int = 0) -> InlineKeyboardMarkup:
@@ -506,7 +474,7 @@ def device_list_keyboard(devices: list[Device], page: int = 0) -> InlineKeyboard
     nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1: nav.append(InlineKeyboardButton("Next", callback_data=f"pg:{page + 1}"))
     rows.append(nav)
-    rows.append([InlineKeyboardButton("Refresh", callback_data="home"), InlineKeyboardButton("Online Only", callback_data="online")])
+    rows.append([InlineKeyboardButton("🔄 Refresh List", callback_data="home"), InlineKeyboardButton("Online Only", callback_data="online")])
     rows.append([InlineKeyboardButton("Close", callback_data="close_msg")])
     return InlineKeyboardMarkup(rows)
 
@@ -883,7 +851,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             except: pass
             return
 
-        # 🔥 FIX: Dedicated Cancel Scan Logic
         if data == "cancel_scan":
             if chat_id in pending_action and pending_action[chat_id].get("action") == "auto_check":
                 pending_action[chat_id]["status"] = "stopped"
@@ -906,8 +873,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
         if data.startswith("auto_fb:"):
             service = data.split(":")[1]
-            
-            # 🔥 Start Tracking For Cancellation
             pending_action[chat_id] = {"action": "auto_check", "status": "running"}
             
             pool = PREFETCH_POOL.setdefault(service, [])
@@ -987,7 +952,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 parse_mode="HTML"
             )
             
-            # 🔥 FIX: Check cancellation status during loop
             for i in range(0, len(check_pool), 15):
                 state = pending_action.get(chat_id, {})
                 if state.get("action") == "auto_check" and state.get("status") == "stopped":
@@ -1322,27 +1286,14 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if text == "Devices List":
         user_focus.setdefault(bot_token, {}).pop(chat_id, None)
         pending_action.pop(chat_id, None)
-        devices = await get_all_devices(bot_token, chat_id, users_db)
         
-        if not devices:
-            if scan_progress["is_scanning"] or len(GLOBAL_DEVICE_CACHE.get("ALL", [])) == 0:
-                scanned = scan_progress.get("scanned", 0)
-                total = scan_progress.get("total", 0)
-                pct = int((scanned / total) * 100) if total > 0 else 0
-                
-                # 🔥 FIX: Hata diya yaha se Cancel button.
-                msg = (
-                    f"⏳ **System is booting up and scanning panels!**\n\n"
-                    f"Background me naye URLs load ho rahe hain...\n"
-                    f"📊 **Progress:** {scanned} / {total} Panels Checked ({pct}%)\n\n"
-                    f"Kripya thoda wait karein aur firse try karein."
-                )
-                await update.message.reply_text(msg, parse_mode="Markdown")
-            else:
-                await update.message.reply_text("❌ Aapke paas abhi koi active devices nahi hain. 'Add Custom Panel' se panel add karein ya VIP lein.")
-            return
+        # 🔥 FIX: Shows list immediately if even 1 device is cached
+        devices = await get_all_devices(bot_token, chat_id, users_db)
+        if devices:
+            return await update.message.reply_text(device_list_header(devices, 0), reply_markup=device_list_keyboard(devices, 0))
             
-        await update.message.reply_text(device_list_header(devices, 0), reply_markup=device_list_keyboard(devices, 0))
+        # Only shows waiting if literally 0 devices are loaded yet
+        await update.message.reply_text("⏳ **Bot abhi naye devices dhundh raha hai.** Kuch seconds baad dubara click karein.", parse_mode="Markdown")
         return
 
     if text == "Scan Hidden Devices":
@@ -1674,35 +1625,33 @@ async def _update_global_cache():
         for i, db_url in enumerate(get_user_dbs(uinfo)):
             dbs_to_poll[f"U_{uid}_{i}"] = db_url
 
-    all_devices_gathered = []
     items = list(dbs_to_poll.items())
-    
     scan_progress["total"] = len(items)
     scan_progress["scanned"] = 0
     scan_progress["is_scanning"] = True
     
+    # 🔥 FIX: Incremental Updates (Live Load) & Capping at 3000 to prevent OOM
+    temp_pool = {}
+    
     for i in range(0, len(items), CHUNK_SIZE):
         chunk = items[i:i + CHUNK_SIZE]
-        tasks = [fetch_device_data_task(tag, url, all_devices_gathered) for tag, url in chunk]
+        results_list = []
+        tasks = [fetch_db_data_task(tag, url, results_list) for tag, url in chunk]
         await asyncio.gather(*tasks)
-        await asyncio.sleep(0.2) 
         
-    unique_devices = []
-    seen_ids_cache = set()
-    seen_numbers = set()
+        for d in results_list:
+            temp_pool[d.id] = d
+            
+        # Update cache immediately so user doesn't wait
+        live_list = list(temp_pool.values())
+        live_list.sort(key=lambda x: (0 if x.status == "online" else 1, 0 if len(x.numbers) > 0 else 1, -x.timestamp))
+        GLOBAL_DEVICE_CACHE["ALL"] = live_list[:5000] # Safe Ram Limit
 
-    for d in all_devices_gathered:
-        if d.id in seen_ids_cache: continue
-        seen_ids_cache.add(d.id)
-        if d.numbers:
-            new_nums = [num for num in d.numbers if num not in seen_numbers]
-            if not new_nums: continue 
-            d.numbers = new_nums
-            seen_numbers.update(new_nums)
-        unique_devices.append(d)
-
-    unique_devices.sort(key=lambda d: (0 if d.status == "online" else 1, 0 if len(d.numbers) > 0 else 1, -d.timestamp))
-    GLOBAL_DEVICE_CACHE["ALL"] = unique_devices
+        del tasks
+        del results_list
+        gc.collect()
+        await asyncio.sleep(0.5) 
+        
     scan_progress["is_scanning"] = False
 
 async def global_cache_loop():
@@ -1762,7 +1711,6 @@ def main() -> None:
         .build()
     )
 
-    # 🔥 FIX: Multi-Reply Active by passing block=False to Handlers
     app.add_handler(CommandHandler("start",   cmd_start, block=False))
     app.add_handler(CommandHandler("admin",   cmd_admin, block=False))
     app.add_handler(CallbackQueryHandler(on_callback, block=False))
