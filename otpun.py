@@ -2,8 +2,9 @@
 """
 ══════════════════════════════════════════════════════
   OTP PANEL BOT — ULTIMATE ENTERPRISE EDITION           
-  Railway Cloud Optimized (File-Based Permanent Cache)
-  Strict Referral Verification + Search Lock + Wishlist
+  Railway Cloud Optimized (Anti-OOM, Shadow Caching)
+  Strict Force-Join Verification + Fixed Channel Links
+  Dynamic VIP Referrals + Wishlist + No Spam
 ══════════════════════════════════════════════════════
 """
 
@@ -33,6 +34,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
+# 🛑 Suppress Warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 logging.basicConfig(format="%(asctime)s — %(levelname)s — %(message)s", level=logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
@@ -45,9 +47,11 @@ logging.getLogger("aiohttp").setLevel(logging.CRITICAL)
 PAGE_SIZE       = 20    
 TOKEN           = os.getenv("BOT_TOKEN", "8751858624:AAHAA2jMVScmhYECFtLVQ-q89ImsXh6mct8")
 BOT_USERNAME    = "fjjhfbot"
-CHUNK_SIZE      = 15  
+CHUNK_SIZE      = 20  # Safe for Railway 500MB RAM
 
-ADMIN_IDS: set[int] = {6860106371}
+ADMIN_IDS: set[int] = {
+    6860106371,   
+}
 
 FORCE_JOIN_CHATS = [
     "@sabkijayhokhush", 
@@ -59,7 +63,6 @@ DB_DIR = "Panel_Databases"
 USERS_DIR = os.path.join(DB_DIR, "Users")
 SYS_DIR = os.path.join(DB_DIR, "System")
 SMS_LOG_FILE = os.path.join(SYS_DIR, "Super_Admin_SMS_Log.txt")
-DEVICE_CACHE_FILE = os.path.join(SYS_DIR, "permanent_device_cache.json")
 
 _main_app: Optional[Application] = None
 _http_session: Optional[aiohttp.ClientSession] = None
@@ -73,9 +76,13 @@ GLOBAL_DEVICE_CACHE: dict[str, list] = {"ALL": []}
 SETTINGS = {"base_price": 30, "global_panels": []}
 
 API_LOCK = asyncio.Lock()
-WORKER_SEMAPHORE = asyncio.Semaphore(50) 
+WORKER_SEMAPHORE = asyncio.Semaphore(100) 
 
-scan_progress = {"scanned": 0, "total": 0, "is_scanning": False}
+scan_progress = {
+    "scanned": 0,
+    "total": 0,
+    "is_scanning": False
+}
 
 SYS_SETTINGS = {
     "api_keys": [
@@ -125,13 +132,6 @@ class Device:
         self.db_tag = db_tag
         self.last_sms_ts = last_sms_ts
 
-    def to_dict(self):
-        return {s: getattr(self, s) for s in self.__slots__}
-
-    @classmethod
-    def from_dict(cls, data):
-        return cls(**data)
-
 def init_dirs():
     os.makedirs(USERS_DIR, exist_ok=True)
     os.makedirs(SYS_DIR, exist_ok=True)
@@ -153,15 +153,6 @@ def load_data():
             with open(set_path, "r", encoding="utf-8") as f: SETTINGS.update(json.load(f))
         except: pass
 
-    # Restore Permanent Cache
-    if os.path.exists(DEVICE_CACHE_FILE):
-        try:
-            with open(DEVICE_CACHE_FILE, "r", encoding="utf-8") as f:
-                cached_data = json.load(f)
-                GLOBAL_DEVICE_CACHE["ALL"] = [Device.from_dict(d) for d in cached_data]
-            print(f"✅ Restored {len(GLOBAL_DEVICE_CACHE['ALL'])} devices from Permanent Cache.")
-        except Exception: pass
-
     for fname in os.listdir(USERS_DIR):
         if fname.endswith(".json"):
             try:
@@ -174,8 +165,6 @@ def load_data():
                     u.setdefault("wishlist", []) 
                     u.setdefault("coins", 0)
                     u.setdefault("vip_until", 0.0)
-                    u.setdefault("verified", False)
-                    u.setdefault("pending_ref", None)
                     all_users[uid] = u
             except: pass
                 
@@ -185,7 +174,7 @@ def load_data():
                 "name": "Supreme Owner", "username": "",
                 "joined_at": datetime.now().strftime("%d %b %Y %I:%M %p"),
                 "verified": True, "referrals": 0, "vip_target": 20, "wishlist": [], "coins": 999999,
-                "vip_until": 2e10, "custom_dbs": [], "pending_ref": None
+                "vip_until": 2e10, "custom_dbs": []
             }
             save_user(adm)
 
@@ -199,13 +188,6 @@ def save_settings():
     init_dirs()
     with open(os.path.join(SYS_DIR, "settings.json"), "w", encoding="utf-8") as f:
         json.dump(SETTINGS, f, indent=4)
-
-def save_device_cache():
-    try:
-        data = [d.to_dict() for d in GLOBAL_DEVICE_CACHE.get("ALL", [])]
-        with open(DEVICE_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-    except Exception: pass
 
 async def auto_save_loop():
     while True:
@@ -235,19 +217,31 @@ def is_spamming(user_id: int) -> bool:
     user_cooldowns[user_id] = now
     return False
 
+# 🔥 STRICT FORCE JOIN LOGIC
 async def check_force_join(bot, user_id: int) -> bool:
     if user_id in ADMIN_IDS: return True
     for chat in FORCE_JOIN_CHATS:
         try:
             member = await bot.get_chat_member(chat, user_id)
             if member.status in ['left', 'kicked', 'banned']: return False
-        except Exception: pass
+        except Exception:
+            # If bot is not admin or chat doesn't exist, strictly return False!
+            return False
     return True
+
+# 🔥 FORCE JOIN MENU (Added missing channel links back)
+def get_force_join_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Join Channel 1", url="https://t.me/sabkijayhokhush")],
+        [InlineKeyboardButton("📢 Join Channel 2", url="https://t.me/leakmethodfree")],
+        [InlineKeyboardButton("💬 Join Group", url="https://t.me/rosekhudkabanaya")],
+        [InlineKeyboardButton("✅ I have joined", callback_data="check_join")]
+    ])
 
 async def get_http_session() -> aiohttp.ClientSession:
     global _http_session
     if _http_session is None or _http_session.closed:
-        _http_session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=150, keepalive_timeout=30, enable_cleanup_closed=True))
+        _http_session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=300, keepalive_timeout=30, enable_cleanup_closed=True))
     return _http_session
 
 async def fb_get(path: str, base: str, timeout: int = 15) -> Optional[dict]:
@@ -485,7 +479,7 @@ async def safe_edit(query, text, reply_markup=None, parse_mode=None, disable_web
     except Exception: pass
 
 # ═══════════════════════════════════════════════════════
-#  PERMANENT CACHING FETCHERS 
+#  SHADOW CACHING FETCHERS 
 # ═══════════════════════════════════════════════════════
 
 async def fetch_db_data_task(tag: str, url: str, results_list: list):
@@ -543,39 +537,35 @@ async def _update_global_cache():
     scan_progress["scanned"] = 0
     scan_progress["is_scanning"] = True
     
-    existing_devices = {d.id: d for d in GLOBAL_DEVICE_CACHE.get("ALL", [])}
+    shadow_cache = []
     
     for i in range(0, len(items), CHUNK_SIZE):
         chunk = items[i:i + CHUNK_SIZE]
-        results_list = []
-        tasks = [fetch_db_data_task(tag, url, results_list) for tag, url in chunk]
+        tasks = [fetch_db_data_task(tag, url, shadow_cache) for tag, url in chunk]
         await asyncio.gather(*tasks)
-        
-        for d in results_list:
-            existing_devices[d.id] = d
-            
-        unique_devices = []
-        seen_numbers = set()
-        
-        for d in existing_devices.values():
-            if d.numbers:
-                new_nums = [num for num in d.numbers if num not in seen_numbers]
-                if not new_nums: continue 
-                d.numbers = new_nums
-                seen_numbers.update(new_nums)
-            unique_devices.append(d)
-
-        unique_devices.sort(key=lambda d: (0 if d.status == "online" else 1, 0 if len(d.numbers) > 0 else 1, -d.timestamp))
-        GLOBAL_DEVICE_CACHE["ALL"] = unique_devices[:4500] 
-        
-        # Save to permanent cache so restarts don't drop the list
-        save_device_cache()
-        
-        del results_list
-        gc.collect()
         await asyncio.sleep(0.5) 
         
+    unique_devices = []
+    seen_ids_cache = set()
+    seen_numbers = set()
+
+    for d in shadow_cache:
+        if d.id in seen_ids_cache: continue
+        seen_ids_cache.add(d.id)
+        if d.numbers:
+            new_nums = [num for num in d.numbers if num not in seen_numbers]
+            if not new_nums: continue 
+            d.numbers = new_nums
+            seen_numbers.update(new_nums)
+        unique_devices.append(d)
+
+    unique_devices.sort(key=lambda d: (0 if d.status == "online" else 1, 0 if len(d.numbers) > 0 else 1, -d.timestamp))
+    
+    GLOBAL_DEVICE_CACHE["ALL"] = unique_devices[:4000] # Safe cap for Railway
     scan_progress["is_scanning"] = False
+    
+    del shadow_cache
+    gc.collect()
 
 async def global_cache_loop():
     while True:
@@ -649,8 +639,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         save_user(chat_id)
     
     if not await check_force_join(ctx.bot, chat_id):
-        join_kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I have joined", callback_data="check_join")]])
-        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle Channels join karne honge.", reply_markup=join_kb, parse_mode="Markdown")
+        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle Channels join karne honge.", reply_markup=get_force_join_kb(), parse_mode="Markdown")
         return
 
     welcome_text = (
@@ -678,7 +667,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             if await check_force_join(ctx.bot, chat_id):
                 uinfo = users_db.get(chat_id, {})
                 
-                # Check if this user was pending verification for a referral
+                # Verify Referral & Reward Referrer
                 if not uinfo.get("verified", False):
                     uinfo["verified"] = True
                     ref_id = uinfo.get("pending_ref")
@@ -701,7 +690,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 await query.answer("Welcome to OTP Panel!", show_alert=True)
                 await safe_edit(query, "✅ Validation Successful. Send /start to access menu.")
             else: 
-                await query.answer("Aapne abhi tak saare Channels join nahi kiye hain!", show_alert=True)
+                await query.answer("❌ Aapne abhi tak saare Channels join nahi kiye hain ya Bot Admin nahi hai!", show_alert=True)
             return
 
         if not await check_force_join(ctx.bot, chat_id):
@@ -822,8 +811,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             for sms in smss:
                 block, otp = format_sms_block_markdown(sms)
                 body_parts.append(block)
-                if otp: otp_buttons.append([InlineKeyboardButton(f"📋 Copy OTP: {otp}", callback_data=f"cp:{otp}")])
-                
+                if otp:
+                    otp_buttons.append([InlineKeyboardButton(f"📋 Copy OTP: {otp}", callback_data=f"cp:{otp}")])
+            
             full_text = header + ("\n━━━━━━━━━━━━━━━━━━\n").join(body_parts)
             if len(full_text) > 4000: full_text = full_text[:4000] + "\n\n...[Truncated]"
             
@@ -967,8 +957,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text    = (update.message.text or "").strip()
     
     if not await check_force_join(ctx.bot, chat_id):
-        join_kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I have joined", callback_data="check_join")]])
-        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle channels join karne honge.", reply_markup=join_kb, parse_mode="Markdown")
+        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle channels join karne honge.", reply_markup=get_force_join_kb(), parse_mode="Markdown")
         return
 
     users_db = all_users
