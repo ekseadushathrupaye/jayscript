@@ -116,7 +116,6 @@ RAW_URLS = [
 
 def load_local_txt_dbs():
     loaded_urls = set()
-    # 🔥 FIX: Added Root path for All_Normal_URLs.txt based on Github screenshot
     files_to_check = [
         "aiurl.txt", 
         "All_Normal_URLs.txt", 
@@ -398,6 +397,52 @@ async def verify_recent_sms(device, max_age_sec=1800) -> tuple[bool, float]:
                     return False, max_sms_ts
     except: pass
     return False, 0.0
+
+async def continuous_prefetch_worker(service: str):
+    while True:
+        try:
+            pool = PREFETCH_POOL.setdefault(service, [])
+            if len(pool) >= 5: 
+                await asyncio.sleep(5)
+                continue
+                
+            all_devices = GLOBAL_DEVICE_CACHE.get("ALL", [])
+            if not all_devices:
+                await asyncio.sleep(5)
+                continue
+                
+            fresh_devices = []
+            for d in all_devices:
+                if d.status == "online" and d.numbers:
+                    is_valid, last_ts = await verify_recent_sms(d, max_age_sec=1800) 
+                    if is_valid:
+                        d.last_sms_ts = last_ts
+                        fresh_devices.append(d)
+                        
+            if not fresh_devices:
+                await asyncio.sleep(10)
+                continue
+                
+            random.shuffle(fresh_devices)
+            in_pool_nums = {item["num"] for item in pool}
+            
+            for d in fresh_devices[:30]:
+                num = d.numbers[0]
+                if num in in_pool_nums: continue
+                seen = False
+                for cid, s_set in user_seen_unreg.items():
+                    if num in s_set: seen = True
+                if seen: continue
+                    
+                res = await check_number_api(service, num)
+                if isinstance(res, dict) and not res.get("status") == "error":
+                    is_reg = res.get("registered", False) or res.get("is_registered", False) or (str(res.get("result", "")).lower() == "registered")
+                    if not is_reg:
+                        pool.append({"device": d, "res": res, "num": num})
+                        break 
+                await asyncio.sleep(0.5)
+        except Exception: pass
+        await asyncio.sleep(3)
 
 # ═══════════════════════════════════════════════════════
 #  UTILITY FORMATTERS & MENUS
@@ -1710,6 +1755,21 @@ def main() -> None:
 
     async def post_init(application: Application) -> None:
         load_data()
+        
+        # 🔥 DUMMY WEB SERVER FOR RAILWAY (Anti-Crash)
+        async def web_server():
+            try:
+                app_web = web.Application()
+                app_web.router.add_get('/', lambda r: web.Response(text="Bot is running!"))
+                runner = web.AppRunner(app_web)
+                await runner.setup()
+                port = int(os.environ.get("PORT", 8080))
+                site = web.TCPSite(runner, '0.0.0.0', port)
+                await site.start()
+            except Exception as e:
+                pass
+                
+        asyncio.create_task(web_server())
         asyncio.create_task(global_cache_loop())  
         asyncio.create_task(poll_loop(application)) 
         asyncio.create_task(auto_save_loop())
