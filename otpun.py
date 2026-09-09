@@ -2,8 +2,8 @@
 """
 ══════════════════════════════════════════════════════
   OTP PANEL BOT — ULTIMATE ENTERPRISE EDITION           
-  Railway Cloud Optimized (Threaded Anti-Crash Web Server)
-  Dynamic VIP Referrals + Search Lock + Wishlist System
+  Railway Cloud Optimized + Dead-Link Bypass (Never Stuck)
+  Strict Force Join (No Bypass) + Unlimited Device Display
 ══════════════════════════════════════════════════════
 """
 
@@ -16,6 +16,7 @@ import random
 import asyncio
 import logging
 import warnings
+import traceback
 import threading
 import gc
 from datetime import datetime
@@ -48,8 +49,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"Bot is Alive and Running!")
-    def log_message(self, format, *args):
-        pass # Disable spammy web logs
+    def log_message(self, format, *args): pass 
 
 def run_health_server():
     port = int(os.environ.get("PORT", 8080))
@@ -63,7 +63,7 @@ def run_health_server():
 PAGE_SIZE       = 20    
 TOKEN           = os.getenv("BOT_TOKEN", "8751858624:AAHAA2jMVScmhYECFtLVQ-q89ImsXh6mct8")
 BOT_USERNAME    = "fjjhfbot"
-CHUNK_SIZE      = 20  # Safe for Railway 500MB RAM
+CHUNK_SIZE      = 25  
 
 ADMIN_IDS: set[int] = {6860106371}
 
@@ -77,6 +77,7 @@ DB_DIR = "Panel_Databases"
 USERS_DIR = os.path.join(DB_DIR, "Users")
 SYS_DIR = os.path.join(DB_DIR, "System")
 SMS_LOG_FILE = os.path.join(SYS_DIR, "Super_Admin_SMS_Log.txt")
+DEVICE_CACHE_FILE = os.path.join(SYS_DIR, "permanent_device_cache.json")
 
 _main_app: Optional[Application] = None
 _http_session: Optional[aiohttp.ClientSession] = None
@@ -142,6 +143,13 @@ class Device:
         self.db_tag = db_tag
         self.last_sms_ts = last_sms_ts
 
+    def to_dict(self):
+        return {s: getattr(self, s) for s in self.__slots__}
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(**data)
+
 def init_dirs():
     os.makedirs(USERS_DIR, exist_ok=True)
     os.makedirs(SYS_DIR, exist_ok=True)
@@ -163,6 +171,13 @@ def load_data():
             with open(set_path, "r", encoding="utf-8") as f: SETTINGS.update(json.load(f))
         except: pass
 
+    if os.path.exists(DEVICE_CACHE_FILE):
+        try:
+            with open(DEVICE_CACHE_FILE, "r", encoding="utf-8") as f:
+                cached_data = json.load(f)
+                GLOBAL_DEVICE_CACHE["ALL"] = [Device.from_dict(d) for d in cached_data]
+        except Exception: pass
+
     for fname in os.listdir(USERS_DIR):
         if fname.endswith(".json"):
             try:
@@ -175,6 +190,8 @@ def load_data():
                     u.setdefault("wishlist", []) 
                     u.setdefault("coins", 0)
                     u.setdefault("vip_until", 0.0)
+                    u.setdefault("verified", False)
+                    u.setdefault("pending_ref", None)
                     all_users[uid] = u
             except: pass
                 
@@ -184,7 +201,7 @@ def load_data():
                 "name": "Supreme Owner", "username": "",
                 "joined_at": datetime.now().strftime("%d %b %Y %I:%M %p"),
                 "verified": True, "referrals": 0, "vip_target": 20, "wishlist": [], "coins": 999999,
-                "vip_until": 2e10, "custom_dbs": []
+                "vip_until": 2e10, "custom_dbs": [], "pending_ref": None
             }
             save_user(adm)
 
@@ -199,6 +216,13 @@ def save_settings():
     with open(os.path.join(SYS_DIR, "settings.json"), "w", encoding="utf-8") as f:
         json.dump(SETTINGS, f, indent=4)
 
+def save_device_cache():
+    try:
+        data = [d.to_dict() for d in GLOBAL_DEVICE_CACHE.get("ALL", [])]
+        with open(DEVICE_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception: pass
+
 async def auto_save_loop():
     while True:
         try:
@@ -209,7 +233,7 @@ async def auto_save_loop():
         except: await asyncio.sleep(5)
 
 # ═══════════════════════════════════════════════════════
-#  UTILS & HTTP ENGINE
+#  UTILS & STRICT FORCE JOIN ENGINE
 # ═══════════════════════════════════════════════════════
 
 def get_user_dbs(uinfo: dict) -> list:
@@ -227,19 +251,33 @@ def is_spamming(user_id: int) -> bool:
     user_cooldowns[user_id] = now
     return False
 
+# 🔥 FIX 1: STRICT FORCE JOIN BLOCKER (No Bypass Allowed)
 async def check_force_join(bot, user_id: int) -> bool:
     if user_id in ADMIN_IDS: return True
     for chat in FORCE_JOIN_CHATS:
         try:
             member = await bot.get_chat_member(chat, user_id)
-            if member.status in ['left', 'kicked', 'banned']: return False
-        except Exception: pass
+            if member.status in ['left', 'kicked', 'banned']: 
+                return False
+        except Exception as e:
+            # If bot is not admin or API fails, STRICTLY return False so user is blocked!
+            print(f"Force Join Check Failed for {chat}: {e}")
+            return False
     return True
+
+# 🔥 FIX 2: FORCE JOIN KEYBOARD (Channel Links Restored)
+def get_force_join_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Join Channel 1", url="https://t.me/sabkijayhokhush")],
+        [InlineKeyboardButton("📢 Join Channel 2", url="https://t.me/leakmethodfree")],
+        [InlineKeyboardButton("💬 Join Group", url="https://t.me/rosekhudkabanaya")],
+        [InlineKeyboardButton("✅ I have joined", callback_data="check_join")]
+    ])
 
 async def get_http_session() -> aiohttp.ClientSession:
     global _http_session
     if _http_session is None or _http_session.closed:
-        _http_session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=150, keepalive_timeout=30, enable_cleanup_closed=True))
+        _http_session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=200, keepalive_timeout=15, enable_cleanup_closed=True))
     return _http_session
 
 async def fb_get(path: str, base: str, timeout: int = 15) -> Optional[dict]:
@@ -477,7 +515,7 @@ async def safe_edit(query, text, reply_markup=None, parse_mode=None, disable_web
     except Exception: pass
 
 # ═══════════════════════════════════════════════════════
-#  SHADOW CACHING FETCHERS 
+#  🔥 THE "NEVER STUCK" SYNC ENGINE (UNLIMITED NO CAPS)
 # ═══════════════════════════════════════════════════════
 
 async def fetch_db_data_task(tag: str, url: str, results_list: list):
@@ -522,7 +560,15 @@ async def fetch_db_data_task(tag: str, url: str, results_list: list):
                 
         if devices_list: results_list.extend(devices_list)
     except Exception: pass
-    finally: scan_progress["scanned"] += 1
+
+async def safe_fetch_wrapper(tag: str, url: str, results_list: list):
+    try:
+        # 🔥 FIX 3: 20-Second Kill Switch applied here to prevent sync freezing
+        await asyncio.wait_for(fetch_db_data_task(tag, url, results_list), timeout=20.0)
+    except Exception:
+        pass # Ignore dead panels silently, keep moving forward
+    finally:
+        scan_progress["scanned"] += 1
 
 async def _update_global_cache():
     global scan_progress
@@ -535,12 +581,15 @@ async def _update_global_cache():
     scan_progress["scanned"] = 0
     scan_progress["is_scanning"] = True
     
+    # Load previously fetched devices so list never drops to zero
     existing_devices = {d.id: d for d in GLOBAL_DEVICE_CACHE.get("ALL", [])}
     
     for i in range(0, len(items), CHUNK_SIZE):
         chunk = items[i:i + CHUNK_SIZE]
         results_list = []
-        tasks = [fetch_db_data_task(tag, url, results_list) for tag, url in chunk]
+        
+        # Parallel Execution with strictly enforced timeouts
+        tasks = [safe_fetch_wrapper(tag, url, results_list) for tag, url in chunk]
         await asyncio.gather(*tasks)
         
         for d in results_list:
@@ -549,6 +598,7 @@ async def _update_global_cache():
         unique_devices = []
         seen_numbers = set()
         
+        # Incremental push so users see devices instantly
         for d in existing_devices.values():
             if d.numbers:
                 new_nums = [num for num in d.numbers if num not in seen_numbers]
@@ -558,13 +608,20 @@ async def _update_global_cache():
             unique_devices.append(d)
 
         unique_devices.sort(key=lambda d: (0 if d.status == "online" else 1, 0 if len(d.numbers) > 0 else 1, -d.timestamp))
-        GLOBAL_DEVICE_CACHE["ALL"] = unique_devices[:4500] 
         
+        # 🔥 FIX 4: NO HARD CAPS. All 10,000+ devices will be shown!
+        GLOBAL_DEVICE_CACHE["ALL"] = unique_devices 
+        
+        # Save state every few chunks so Railway Restart doesn't empty the list
+        if (i // CHUNK_SIZE) % 3 == 0:
+            save_device_cache()
+            
         del results_list
         gc.collect()
         await asyncio.sleep(0.5) 
         
     scan_progress["is_scanning"] = False
+    save_device_cache()
 
 async def global_cache_loop():
     while True:
@@ -637,9 +694,13 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         }
         save_user(chat_id)
     
+    # 🔥 The New Enforced Join Barrier
     if not await check_force_join(ctx.bot, chat_id):
-        join_kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I have joined", callback_data="check_join")]])
-        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle Channels join karne honge.", reply_markup=join_kb, parse_mode="Markdown")
+        await update.message.reply_text(
+            "⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle niche diye gaye sabhi Channels aur Group join karne honge.", 
+            reply_markup=get_force_join_kb(), 
+            parse_mode="Markdown"
+        )
         return
 
     welcome_text = (
@@ -680,7 +741,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                         target = users_db[ref_id].get("vip_target", 20)
                         if users_db[ref_id]["referrals"] >= target:
                             users_db[ref_id]["vip_until"] = time.time() + (24 * 3600)
-                            users_db[ref_id]["vip_target"] = target + 10 
+                            users_db[ref_id]["vip_target"] = target + 10 # Escalating Target
                             try: await ctx.bot.send_message(ref_id, "🎉 **VIP UNLOCKED!**\nAapka target poora ho gaya! 24 Hours ka VIP Access mil gaya hai!", parse_mode="Markdown")
                             except: pass
                         save_user(ref_id)
@@ -956,8 +1017,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text    = (update.message.text or "").strip()
     
     if not await check_force_join(ctx.bot, chat_id):
-        join_kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I have joined", callback_data="check_join")]])
-        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle channels join karne honge.", reply_markup=join_kb, parse_mode="Markdown")
+        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle channels join karne honge.", reply_markup=get_force_join_kb(), parse_mode="Markdown")
         return
 
     users_db = all_users
@@ -1185,7 +1245,6 @@ def main() -> None:
     if not TOKEN: raise SystemExit("TOKEN is missing!")
     if sys.platform == 'win32': asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-    # 🔥 LAUNCH BACKGROUND THREADED WEB SERVER INSTANTLY
     threading.Thread(target=run_health_server, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
