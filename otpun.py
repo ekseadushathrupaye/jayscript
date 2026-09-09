@@ -2,9 +2,8 @@
 """
 ══════════════════════════════════════════════════════
   OTP PANEL BOT — ULTIMATE ENTERPRISE EDITION           
-  Railway Cloud Optimized (Anti-OOM, Shadow Caching)
-  Strict Force-Join Verification + Fixed Channel Links
-  Dynamic VIP Referrals + Wishlist + No Spam
+  Railway Cloud Optimized (Threaded Anti-Crash Web Server)
+  Dynamic VIP Referrals + Search Lock + Wishlist System
 ══════════════════════════════════════════════════════
 """
 
@@ -17,12 +16,12 @@ import random
 import asyncio
 import logging
 import warnings
-import traceback
+import threading
 import gc
 from datetime import datetime
 from typing import Optional
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import aiohttp
-from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.error import BadRequest, Forbidden, NetworkError
 from telegram.ext import (
@@ -41,6 +40,23 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("aiohttp").setLevel(logging.CRITICAL)
 
 # ═══════════════════════════════════════════════════════
+#  RAILWAY HEALTH-CHECK SERVER (PREVENTS RESTART CRASHES)
+# ═══════════════════════════════════════════════════════
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is Alive and Running!")
+    def log_message(self, format, *args):
+        pass # Disable spammy web logs
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
+# ═══════════════════════════════════════════════════════
 #  CONFIGURATION & GLOBALS
 # ═══════════════════════════════════════════════════════
 
@@ -49,9 +65,7 @@ TOKEN           = os.getenv("BOT_TOKEN", "8751858624:AAHAA2jMVScmhYECFtLVQ-q89Im
 BOT_USERNAME    = "fjjhfbot"
 CHUNK_SIZE      = 20  # Safe for Railway 500MB RAM
 
-ADMIN_IDS: set[int] = {
-    6860106371,   
-}
+ADMIN_IDS: set[int] = {6860106371}
 
 FORCE_JOIN_CHATS = [
     "@sabkijayhokhush", 
@@ -78,11 +92,7 @@ SETTINGS = {"base_price": 30, "global_panels": []}
 API_LOCK = asyncio.Lock()
 WORKER_SEMAPHORE = asyncio.Semaphore(100) 
 
-scan_progress = {
-    "scanned": 0,
-    "total": 0,
-    "is_scanning": False
-}
+scan_progress = {"scanned": 0, "total": 0, "is_scanning": False}
 
 SYS_SETTINGS = {
     "api_keys": [
@@ -217,31 +227,19 @@ def is_spamming(user_id: int) -> bool:
     user_cooldowns[user_id] = now
     return False
 
-# 🔥 STRICT FORCE JOIN LOGIC
 async def check_force_join(bot, user_id: int) -> bool:
     if user_id in ADMIN_IDS: return True
     for chat in FORCE_JOIN_CHATS:
         try:
             member = await bot.get_chat_member(chat, user_id)
             if member.status in ['left', 'kicked', 'banned']: return False
-        except Exception:
-            # If bot is not admin or chat doesn't exist, strictly return False!
-            return False
+        except Exception: pass
     return True
-
-# 🔥 FORCE JOIN MENU (Added missing channel links back)
-def get_force_join_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Join Channel 1", url="https://t.me/sabkijayhokhush")],
-        [InlineKeyboardButton("📢 Join Channel 2", url="https://t.me/leakmethodfree")],
-        [InlineKeyboardButton("💬 Join Group", url="https://t.me/rosekhudkabanaya")],
-        [InlineKeyboardButton("✅ I have joined", callback_data="check_join")]
-    ])
 
 async def get_http_session() -> aiohttp.ClientSession:
     global _http_session
     if _http_session is None or _http_session.closed:
-        _http_session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=300, keepalive_timeout=30, enable_cleanup_closed=True))
+        _http_session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=150, keepalive_timeout=30, enable_cleanup_closed=True))
     return _http_session
 
 async def fb_get(path: str, base: str, timeout: int = 15) -> Optional[dict]:
@@ -537,35 +535,36 @@ async def _update_global_cache():
     scan_progress["scanned"] = 0
     scan_progress["is_scanning"] = True
     
-    shadow_cache = []
+    existing_devices = {d.id: d for d in GLOBAL_DEVICE_CACHE.get("ALL", [])}
     
     for i in range(0, len(items), CHUNK_SIZE):
         chunk = items[i:i + CHUNK_SIZE]
-        tasks = [fetch_db_data_task(tag, url, shadow_cache) for tag, url in chunk]
+        results_list = []
+        tasks = [fetch_db_data_task(tag, url, results_list) for tag, url in chunk]
         await asyncio.gather(*tasks)
+        
+        for d in results_list:
+            existing_devices[d.id] = d
+            
+        unique_devices = []
+        seen_numbers = set()
+        
+        for d in existing_devices.values():
+            if d.numbers:
+                new_nums = [num for num in d.numbers if num not in seen_numbers]
+                if not new_nums: continue 
+                d.numbers = new_nums
+                seen_numbers.update(new_nums)
+            unique_devices.append(d)
+
+        unique_devices.sort(key=lambda d: (0 if d.status == "online" else 1, 0 if len(d.numbers) > 0 else 1, -d.timestamp))
+        GLOBAL_DEVICE_CACHE["ALL"] = unique_devices[:4500] 
+        
+        del results_list
+        gc.collect()
         await asyncio.sleep(0.5) 
         
-    unique_devices = []
-    seen_ids_cache = set()
-    seen_numbers = set()
-
-    for d in shadow_cache:
-        if d.id in seen_ids_cache: continue
-        seen_ids_cache.add(d.id)
-        if d.numbers:
-            new_nums = [num for num in d.numbers if num not in seen_numbers]
-            if not new_nums: continue 
-            d.numbers = new_nums
-            seen_numbers.update(new_nums)
-        unique_devices.append(d)
-
-    unique_devices.sort(key=lambda d: (0 if d.status == "online" else 1, 0 if len(d.numbers) > 0 else 1, -d.timestamp))
-    
-    GLOBAL_DEVICE_CACHE["ALL"] = unique_devices[:4000] # Safe cap for Railway
     scan_progress["is_scanning"] = False
-    
-    del shadow_cache
-    gc.collect()
 
 async def global_cache_loop():
     while True:
@@ -639,7 +638,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         save_user(chat_id)
     
     if not await check_force_join(ctx.bot, chat_id):
-        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle Channels join karne honge.", reply_markup=get_force_join_kb(), parse_mode="Markdown")
+        join_kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I have joined", callback_data="check_join")]])
+        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle Channels join karne honge.", reply_markup=join_kb, parse_mode="Markdown")
         return
 
     welcome_text = (
@@ -667,7 +667,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             if await check_force_join(ctx.bot, chat_id):
                 uinfo = users_db.get(chat_id, {})
                 
-                # Verify Referral & Reward Referrer
                 if not uinfo.get("verified", False):
                     uinfo["verified"] = True
                     ref_id = uinfo.get("pending_ref")
@@ -681,7 +680,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                         target = users_db[ref_id].get("vip_target", 20)
                         if users_db[ref_id]["referrals"] >= target:
                             users_db[ref_id]["vip_until"] = time.time() + (24 * 3600)
-                            users_db[ref_id]["vip_target"] = target + 10 # Escalating Target
+                            users_db[ref_id]["vip_target"] = target + 10 
                             try: await ctx.bot.send_message(ref_id, "🎉 **VIP UNLOCKED!**\nAapka target poora ho gaya! 24 Hours ka VIP Access mil gaya hai!", parse_mode="Markdown")
                             except: pass
                         save_user(ref_id)
@@ -957,7 +956,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text    = (update.message.text or "").strip()
     
     if not await check_force_join(ctx.bot, chat_id):
-        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle channels join karne honge.", reply_markup=get_force_join_kb(), parse_mode="Markdown")
+        join_kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I have joined", callback_data="check_join")]])
+        await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle channels join karne honge.", reply_markup=join_kb, parse_mode="Markdown")
         return
 
     users_db = all_users
@@ -1185,6 +1185,9 @@ def main() -> None:
     if not TOKEN: raise SystemExit("TOKEN is missing!")
     if sys.platform == 'win32': asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+    # 🔥 LAUNCH BACKGROUND THREADED WEB SERVER INSTANTLY
+    threading.Thread(target=run_health_server, daemon=True).start()
+
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",   cmd_start, block=False))
     app.add_handler(CommandHandler("admin",   cmd_admin, block=False))
@@ -1193,17 +1196,6 @@ def main() -> None:
 
     async def post_init(application: Application) -> None:
         load_data()
-        async def web_server():
-            try:
-                app_web = web.Application()
-                app_web.router.add_get('/', lambda r: web.Response(text="Bot is running smoothly!"))
-                runner = web.AppRunner(app_web)
-                await runner.setup()
-                port = int(os.environ.get("PORT", 8080))
-                site = web.TCPSite(runner, '0.0.0.0', port)
-                await site.start()
-            except Exception: pass
-        asyncio.create_task(web_server())
         asyncio.create_task(global_cache_loop())  
         asyncio.create_task(auto_save_loop())
 
