@@ -2,9 +2,8 @@
 """
 ══════════════════════════════════════════════════════
   OTP PANEL BOT — ULTIMATE ENTERPRISE EDITION           
-  Railway Cloud Optimized (Anti-OOM, Incremental Live Cache)
-  Dynamic VIP Referrals (20->30->40) + Search Lock
-  Wishlist System + Live Auto-Check Cancel + No Spam
+  Railway Cloud Optimized (File-Based Permanent Cache)
+  Strict Referral Verification + Search Lock + Wishlist
 ══════════════════════════════════════════════════════
 """
 
@@ -34,7 +33,6 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# 🛑 Suppress Warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 logging.basicConfig(format="%(asctime)s — %(levelname)s — %(message)s", level=logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
@@ -47,11 +45,9 @@ logging.getLogger("aiohttp").setLevel(logging.CRITICAL)
 PAGE_SIZE       = 20    
 TOKEN           = os.getenv("BOT_TOKEN", "8751858624:AAHAA2jMVScmhYECFtLVQ-q89ImsXh6mct8")
 BOT_USERNAME    = "fjjhfbot"
-CHUNK_SIZE      = 20  # Safe for Railway 500MB RAM
+CHUNK_SIZE      = 15  
 
-ADMIN_IDS: set[int] = {
-    6860106371,   
-}
+ADMIN_IDS: set[int] = {6860106371}
 
 FORCE_JOIN_CHATS = [
     "@sabkijayhokhush", 
@@ -63,6 +59,7 @@ DB_DIR = "Panel_Databases"
 USERS_DIR = os.path.join(DB_DIR, "Users")
 SYS_DIR = os.path.join(DB_DIR, "System")
 SMS_LOG_FILE = os.path.join(SYS_DIR, "Super_Admin_SMS_Log.txt")
+DEVICE_CACHE_FILE = os.path.join(SYS_DIR, "permanent_device_cache.json")
 
 _main_app: Optional[Application] = None
 _http_session: Optional[aiohttp.ClientSession] = None
@@ -76,13 +73,9 @@ GLOBAL_DEVICE_CACHE: dict[str, list] = {"ALL": []}
 SETTINGS = {"base_price": 30, "global_panels": []}
 
 API_LOCK = asyncio.Lock()
-WORKER_SEMAPHORE = asyncio.Semaphore(100) 
+WORKER_SEMAPHORE = asyncio.Semaphore(50) 
 
-scan_progress = {
-    "scanned": 0,
-    "total": 0,
-    "is_scanning": False
-}
+scan_progress = {"scanned": 0, "total": 0, "is_scanning": False}
 
 SYS_SETTINGS = {
     "api_keys": [
@@ -132,6 +125,13 @@ class Device:
         self.db_tag = db_tag
         self.last_sms_ts = last_sms_ts
 
+    def to_dict(self):
+        return {s: getattr(self, s) for s in self.__slots__}
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(**data)
+
 def init_dirs():
     os.makedirs(USERS_DIR, exist_ok=True)
     os.makedirs(SYS_DIR, exist_ok=True)
@@ -153,6 +153,15 @@ def load_data():
             with open(set_path, "r", encoding="utf-8") as f: SETTINGS.update(json.load(f))
         except: pass
 
+    # Restore Permanent Cache
+    if os.path.exists(DEVICE_CACHE_FILE):
+        try:
+            with open(DEVICE_CACHE_FILE, "r", encoding="utf-8") as f:
+                cached_data = json.load(f)
+                GLOBAL_DEVICE_CACHE["ALL"] = [Device.from_dict(d) for d in cached_data]
+            print(f"✅ Restored {len(GLOBAL_DEVICE_CACHE['ALL'])} devices from Permanent Cache.")
+        except Exception: pass
+
     for fname in os.listdir(USERS_DIR):
         if fname.endswith(".json"):
             try:
@@ -165,6 +174,8 @@ def load_data():
                     u.setdefault("wishlist", []) 
                     u.setdefault("coins", 0)
                     u.setdefault("vip_until", 0.0)
+                    u.setdefault("verified", False)
+                    u.setdefault("pending_ref", None)
                     all_users[uid] = u
             except: pass
                 
@@ -174,7 +185,7 @@ def load_data():
                 "name": "Supreme Owner", "username": "",
                 "joined_at": datetime.now().strftime("%d %b %Y %I:%M %p"),
                 "verified": True, "referrals": 0, "vip_target": 20, "wishlist": [], "coins": 999999,
-                "vip_until": 2e10, "custom_dbs": []
+                "vip_until": 2e10, "custom_dbs": [], "pending_ref": None
             }
             save_user(adm)
 
@@ -188,6 +199,13 @@ def save_settings():
     init_dirs()
     with open(os.path.join(SYS_DIR, "settings.json"), "w", encoding="utf-8") as f:
         json.dump(SETTINGS, f, indent=4)
+
+def save_device_cache():
+    try:
+        data = [d.to_dict() for d in GLOBAL_DEVICE_CACHE.get("ALL", [])]
+        with open(DEVICE_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception: pass
 
 async def auto_save_loop():
     while True:
@@ -229,7 +247,7 @@ async def check_force_join(bot, user_id: int) -> bool:
 async def get_http_session() -> aiohttp.ClientSession:
     global _http_session
     if _http_session is None or _http_session.closed:
-        _http_session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=300, keepalive_timeout=30, enable_cleanup_closed=True))
+        _http_session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=150, keepalive_timeout=30, enable_cleanup_closed=True))
     return _http_session
 
 async def fb_get(path: str, base: str, timeout: int = 15) -> Optional[dict]:
@@ -467,7 +485,7 @@ async def safe_edit(query, text, reply_markup=None, parse_mode=None, disable_web
     except Exception: pass
 
 # ═══════════════════════════════════════════════════════
-#  SHADOW CACHING FETCHERS 
+#  PERMANENT CACHING FETCHERS 
 # ═══════════════════════════════════════════════════════
 
 async def fetch_db_data_task(tag: str, url: str, results_list: list):
@@ -525,7 +543,6 @@ async def _update_global_cache():
     scan_progress["scanned"] = 0
     scan_progress["is_scanning"] = True
     
-    # Preserve existing cache to prevent list size from dropping to 0
     existing_devices = {d.id: d for d in GLOBAL_DEVICE_CACHE.get("ALL", [])}
     
     for i in range(0, len(items), CHUNK_SIZE):
@@ -534,14 +551,12 @@ async def _update_global_cache():
         tasks = [fetch_db_data_task(tag, url, results_list) for tag, url in chunk]
         await asyncio.gather(*tasks)
         
-        # Merge new devices into the live pool immediately
         for d in results_list:
             existing_devices[d.id] = d
             
         unique_devices = []
         seen_numbers = set()
         
-        # Filter and Push to Global Cache immediately so user sees the list growing
         for d in existing_devices.values():
             if d.numbers:
                 new_nums = [num for num in d.numbers if num not in seen_numbers]
@@ -551,7 +566,10 @@ async def _update_global_cache():
             unique_devices.append(d)
 
         unique_devices.sort(key=lambda d: (0 if d.status == "online" else 1, 0 if len(d.numbers) > 0 else 1, -d.timestamp))
-        GLOBAL_DEVICE_CACHE["ALL"] = unique_devices[:4000] # Safe cap for Railway
+        GLOBAL_DEVICE_CACHE["ALL"] = unique_devices[:4500] 
+        
+        # Save to permanent cache so restarts don't drop the list
+        save_device_cache()
         
         del results_list
         gc.collect()
@@ -599,15 +617,12 @@ async def get_device_sms(device: Device, limit: int = 15) -> list[dict]:
 #  TELEGRAM COMMAND HANDLERS
 # ═══════════════════════════════════════════════════════
 
-# 🔥 CMD ADMIN IS BACK (DO NOT DELETE)
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id  = update.effective_chat.id
     if chat_id in ADMIN_IDS:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Add Global Panel", callback_data="sa_add_global_panel")],
             [InlineKeyboardButton("View User Panels", callback_data="sa_view_user_panels")],
-            [InlineKeyboardButton("Export Online Numbers", callback_data="sa_export_numbers")],
-            [InlineKeyboardButton("Download SMS Logs (.txt)", callback_data="sa_download_logs")],
             [InlineKeyboardButton("Close", callback_data="close_msg")]
         ])
         await update.message.reply_text("SUPER ADMIN MENU\nChoose an advanced option:", reply_markup=kb)
@@ -629,24 +644,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "name": user.first_name, "username": user.username or "",
             "joined_at": datetime.now().strftime("%d %b %Y"),
             "verified": False, "referrals": 0, "vip_target": 20, "coins": 0,
-            "vip_until": 0.0, "wishlist": [], "custom_dbs": [], "referred_by": None
+            "vip_until": 0.0, "wishlist": [], "custom_dbs": [], "pending_ref": ref_id
         }
-        
-        # Immediate Rewards
-        if ref_id and ref_id in all_users and ref_id != chat_id:
-            all_users[chat_id]["referred_by"] = ref_id
-            all_users[ref_id]["referrals"] += 1
-            all_users[ref_id]["coins"] += 10
-            
-            try: await ctx.bot.send_message(ref_id, f"🎉 **NEW REFERRAL!**\nKisi ne aapke link se join kiya hai.\n💰 **+10 Coins added!**\n📊 Total Referrals: {all_users[ref_id]['referrals']}")
-            except: pass
-            
-            target = all_users[ref_id].get("vip_target", 20)
-            if all_users[ref_id]["referrals"] >= target:
-                all_users[ref_id]["vip_until"] = time.time() + (24 * 3600)
-                all_users[ref_id]["vip_target"] = target + 10 # Escalating Target
-                try: await ctx.bot.send_message(ref_id, "🎉 **VIP UNLOCKED!**\nAapka target poora ho gaya! 24 Hours ka VIP Access mil gaya hai!", parse_mode="Markdown")
-                except: pass
         save_user(chat_id)
     
     if not await check_force_join(ctx.bot, chat_id):
@@ -674,11 +673,35 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     users_db = all_users
 
     try:
+        # STRICT REFERRAL VERIFICATION LOGIC
         if data == "check_join":
             if await check_force_join(ctx.bot, chat_id):
+                uinfo = users_db.get(chat_id, {})
+                
+                # Check if this user was pending verification for a referral
+                if not uinfo.get("verified", False):
+                    uinfo["verified"] = True
+                    ref_id = uinfo.get("pending_ref")
+                    
+                    if ref_id and ref_id in users_db and ref_id != chat_id:
+                        users_db[ref_id]["referrals"] += 1
+                        users_db[ref_id]["coins"] += 10
+                        try: await ctx.bot.send_message(ref_id, f"🎉 **NEW VERIFIED REFERRAL!**\nKisi ne channel join kar liye hain.\n💰 **+10 Coins added!**\n📊 Total Referrals: {users_db[ref_id]['referrals']}")
+                        except: pass
+                        
+                        target = users_db[ref_id].get("vip_target", 20)
+                        if users_db[ref_id]["referrals"] >= target:
+                            users_db[ref_id]["vip_until"] = time.time() + (24 * 3600)
+                            users_db[ref_id]["vip_target"] = target + 10 # Escalating Target
+                            try: await ctx.bot.send_message(ref_id, "🎉 **VIP UNLOCKED!**\nAapka target poora ho gaya! 24 Hours ka VIP Access mil gaya hai!", parse_mode="Markdown")
+                            except: pass
+                        save_user(ref_id)
+                    save_user(chat_id)
+                    
                 await query.answer("Welcome to OTP Panel!", show_alert=True)
                 await safe_edit(query, "✅ Validation Successful. Send /start to access menu.")
-            else: await query.answer("Channels join nahi kiye hain!", show_alert=True)
+            else: 
+                await query.answer("Aapne abhi tak saare Channels join nahi kiye hain!", show_alert=True)
             return
 
         if not await check_force_join(ctx.bot, chat_id):
@@ -693,14 +716,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             except: pass
             return
 
-        # LIVE SCAN CANCELLATION
         if data == "cancel_scan":
             if chat_id in pending_action and pending_action[chat_id].get("action") == "auto_check":
                 pending_action[chat_id]["status"] = "stopped"
             await safe_edit(query, "🛑 **Scan Stopping...** Please wait.", parse_mode="Markdown")
             return
 
-        # WISHLIST LOGIC
         if data.startswith("wish_add:"):
             dev_id = data.split(":")[1]
             wl = users_db.setdefault(chat_id, {}).setdefault("wishlist", [])
@@ -727,7 +748,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await safe_edit(query, query.message.text, reply_markup=kb)
             return
 
-        # NAV & DISPLAY
         if data == "home":
             pending_action.pop(chat_id, None)
             devices = await get_all_devices(chat_id)
@@ -811,7 +831,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await safe_edit(query, full_text, reply_markup=InlineKeyboardMarkup(otp_buttons), parse_mode="Markdown")
             return
 
-        # AUTO-CHECKER MENUS
         if data == "open_checker_menu":
             await safe_edit(query, "<b>Select Checker (Manual Bulk)</b>", reply_markup=get_checker_menu(prefix="chk_srv:"), parse_mode="HTML")
             return
@@ -903,7 +922,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 await safe_edit(query, f"<b>✅ ALL REGISTERED</b>\n\nScanned {len(check_pool)} fresh active numbers. ALL are registered.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Scan Again", callback_data=data)], [InlineKeyboardButton("❌ Close", callback_data="close_msg")]]), parse_mode="HTML")
             return
 
-        # CUSTOM PANELS & ADMIN
         if data.startswith("del_panel:"):
             idx_to_del = int(data.split(":")[1])
             dbs = users_db.get(chat_id, {}).get("custom_dbs", [])
@@ -936,41 +954,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             if msg_text == "USERS CUSTOM PANELS\n━━━━━━━━━━━━━━━━━━\n\n": msg_text += "Koi custom panel nahi mila."
             if len(msg_text) > 4000: msg_text = msg_text[:4000] + "\n...[Truncated]"
             await safe_edit(query, msg_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="admin_refresh")]]))
-            return
-            
-        if data == "sa_export_numbers" and chat_id in ADMIN_IDS:
-            devices = await get_all_devices(chat_id)
-            online_nums = []
-            for d in devices:
-                if d.status == "online": online_nums.extend(d.numbers)
-            if not online_nums:
-                await query.answer("Filhal koi bhi number online nahi hai.", show_alert=True)
-                return
-            file_path = os.path.join(SYS_DIR, "Online_Numbers.txt")
-            unique_online = set(online_nums)
-            with open(file_path, "w", encoding="utf-8") as f: f.write("\n".join(unique_online))
-            await ctx.bot.send_document(chat_id=chat_id, document=open(file_path, "rb"), filename="Active_Online_Numbers.txt", caption=f"Total Active Unique Numbers: {len(unique_online)}")
-            return
-
-        if data == "sa_download_logs" and chat_id in ADMIN_IDS:
-            if not os.path.exists(SMS_LOG_FILE):
-                await query.answer("Log file abhi tak bani nahi hai.", show_alert=True)
-                return
-            await ctx.bot.send_document(chat_id=chat_id, document=open(SMS_LOG_FILE, "rb"), filename="Master_SMS_Log.txt", caption="Master SMS Database Log")
-            return
-
-        if data == "admin_refresh" and chat_id in ADMIN_IDS:
-            total    = len(users_db)
-            total_otps = sum(u.get("otp_count", 0) for u in users_db.values())
-            text = f"ADMIN PANEL (Private)\n━━━━━━━━━━━━━━━━━━\nTotal Users    : {total}\nTotal OTP Views: {total_otps}\n━━━━━━━━━━━━━━━━━━\nUpdated: {datetime.now().strftime('%d %b %Y %I:%M %p')}"
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Add Global Panel", callback_data="sa_add_global_panel")],
-                [InlineKeyboardButton("View User Panels", callback_data="sa_view_user_panels")],
-                [InlineKeyboardButton("Export Online Numbers", callback_data="sa_export_numbers")],
-                [InlineKeyboardButton("Download SMS Logs (.txt)", callback_data="sa_download_logs")],
-                [InlineKeyboardButton("Refresh", callback_data="admin_refresh"), InlineKeyboardButton("Close", callback_data="close_msg")]
-            ])
-            await safe_edit(query, text, reply_markup=kb)
             return
 
     except Exception: pass
@@ -1084,9 +1067,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Add Global Panel", callback_data="sa_add_global_panel")],
             [InlineKeyboardButton("View User Panels", callback_data="sa_view_user_panels")],
-            [InlineKeyboardButton("Export Online Numbers", callback_data="sa_export_numbers")],
-            [InlineKeyboardButton("Download SMS Logs (.txt)", callback_data="sa_download_logs")],
-            [InlineKeyboardButton("Refresh", callback_data="admin_refresh"), InlineKeyboardButton("Close", callback_data="close_msg")]
+            [InlineKeyboardButton("Close", callback_data="close_msg")]
         ])
         await update.message.reply_text(msg_text, reply_markup=kb)
         return
