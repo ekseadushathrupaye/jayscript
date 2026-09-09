@@ -595,6 +595,18 @@ async def get_device_sms(device: Device, limit: int = 15) -> list[dict]:
 #  TELEGRAM COMMAND HANDLERS
 # ═══════════════════════════════════════════════════════
 
+async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id  = update.effective_chat.id
+    if chat_id in ADMIN_IDS:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Add Global Panel", callback_data="sa_add_global_panel")],
+            [InlineKeyboardButton("View User Panels", callback_data="sa_view_user_panels")],
+            [InlineKeyboardButton("Close", callback_data="close_msg")]
+        ])
+        await update.message.reply_text("SUPER ADMIN MENU\nChoose an advanced option:", reply_markup=kb)
+    else:
+        await update.message.reply_text("❌ You are not authorized.")
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id  = update.effective_chat.id
     user = update.effective_user
@@ -782,8 +794,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             for sms in smss:
                 block, otp = format_sms_block_markdown(sms)
                 body_parts.append(block)
-                if otp: otp_buttons.append([InlineKeyboardButton(f"📋 Copy OTP: {otp}", callback_data=f"cp:{otp}")])
-                
+                if otp:
+                    otp_buttons.append([InlineKeyboardButton(f"📋 Copy OTP: {otp}", callback_data=f"cp:{otp}")])
+            
             full_text = header + ("\n━━━━━━━━━━━━━━━━━━\n").join(body_parts)
             if len(full_text) > 4000: full_text = full_text[:4000] + "\n\n...[Truncated]"
             
@@ -1112,7 +1125,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 await asyncio.sleep(0.5)
             
             res_text = f"<b>📊 BULK CHECK RESULTS ({service.upper()})</b>\n━━━━━━━━━━━━━━━━━━\n" + "\n".join(bulk_results)
-            if len(res_text) > 4000: res_text = res_text[:4000] + "\n...[Truncated]"
+            if len(res_text) > 4000:
+                res_text = res_text[:4000] + "\n...[Truncated]"
                 
             kb = [[InlineKeyboardButton("🔄 Check Another", callback_data=f"chk_srv:{service}"), InlineKeyboardButton("🏠 Select Checker", callback_data="open_checker_menu")]]
             await wait_msg.edit_text(res_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
