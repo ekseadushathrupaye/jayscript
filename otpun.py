@@ -3,7 +3,7 @@
 ══════════════════════════════════════════════════════
   OTP PANEL BOT — PRIVATE ADMIN EDITION           
   Railway Cloud Optimized + Dummy Web Server + 24/7 Alive
-  Stable Chunk Engine + Ultra Fast Fetch + Live Tracker
+  Fixed Referral System (Pre-Force-Join) + Auto TXT Load
   Credit/Configured by: Gemini AI
 ══════════════════════════════════════════════════════
 """
@@ -46,7 +46,7 @@ logging.getLogger("aiohttp").setLevel(logging.CRITICAL)
 
 POLL_INTERVAL   = 3  
 PAGE_SIZE       = 20    
-TOKEN           = os.getenv("BOT_TOKEN", "8751858624:AAHAA2jMVScmhYECFtLVQ-q89ImsXh6mct8") # Railway env support
+TOKEN           = os.getenv("BOT_TOKEN", "8751858624:AAHAA2jMVScmhYECFtLVQ-q89ImsXh6mct8")
 BOT_USERNAME    = "fjjhfbot"
 CHUNK_SIZE      = 150 
 
@@ -65,7 +65,6 @@ USERS_DIR = os.path.join(DB_DIR, "Users")
 CLONES_DIR = os.path.join(DB_DIR, "Clones")
 SYS_DIR = os.path.join(DB_DIR, "System")
 SMS_LOG_FILE = os.path.join(SYS_DIR, "Super_Admin_SMS_Log.txt")
-LOCAL_TXT_DB_FILE = os.path.join("Extracted_URLs", "All_Normal_URLs.txt")
 
 seen_ids:  set[str] = set()   
 first_run: bool     = True
@@ -109,10 +108,6 @@ SYS_SETTINGS = {
     "check_anim": "⚡"
 }
 
-# ═══════════════════════════════════════════════════════
-#  DATABASES (Hardcoded + Local Files Extract)
-# ═══════════════════════════════════════════════════════
-
 RAW_URLS = [
     "https://aaaa-b3749-default-rtdb.firebaseio.com", "https://aashish-2e04c-default-rtdb.firebaseio.com",
     "https://aaya-6e335-default-rtdb.firebaseio.com", "https://aaya2-8df9a-default-rtdb.firebaseio.com",
@@ -121,8 +116,10 @@ RAW_URLS = [
 
 def load_local_txt_dbs():
     loaded_urls = set()
+    # 🔥 FIX: Added Root path for All_Normal_URLs.txt based on Github screenshot
     files_to_check = [
         "aiurl.txt", 
+        "All_Normal_URLs.txt", 
         os.path.join("Extracted_URLs", "All_Normal_URLs.txt")
     ]
     
@@ -194,6 +191,7 @@ def load_data():
                     all_users[uid] = json.load(f)
                     all_users[uid].setdefault("custom_dbs", [])
                     all_users[uid].setdefault("referrals", 0)
+                    all_users[uid].setdefault("coins", 0)
                     all_users[uid].setdefault("vip_until", 0.0)
                     all_users[uid].setdefault("referred_by", None)
             except: pass
@@ -400,52 +398,6 @@ async def verify_recent_sms(device, max_age_sec=1800) -> tuple[bool, float]:
                     return False, max_sms_ts
     except: pass
     return False, 0.0
-
-async def continuous_prefetch_worker(service: str):
-    while True:
-        try:
-            pool = PREFETCH_POOL.setdefault(service, [])
-            if len(pool) >= 5: 
-                await asyncio.sleep(5)
-                continue
-                
-            all_devices = GLOBAL_DEVICE_CACHE.get("ALL", [])
-            if not all_devices:
-                await asyncio.sleep(5)
-                continue
-                
-            fresh_devices = []
-            for d in all_devices:
-                if d.status == "online" and d.numbers:
-                    is_valid, last_ts = await verify_recent_sms(d, max_age_sec=1800) 
-                    if is_valid:
-                        d.last_sms_ts = last_ts
-                        fresh_devices.append(d)
-                        
-            if not fresh_devices:
-                await asyncio.sleep(10)
-                continue
-                
-            random.shuffle(fresh_devices)
-            in_pool_nums = {item["num"] for item in pool}
-            
-            for d in fresh_devices[:30]:
-                num = d.numbers[0]
-                if num in in_pool_nums: continue
-                seen = False
-                for cid, s_set in user_seen_unreg.items():
-                    if num in s_set: seen = True
-                if seen: continue
-                    
-                res = await check_number_api(service, num)
-                if isinstance(res, dict) and not res.get("status") == "error":
-                    is_reg = res.get("registered", False) or res.get("is_registered", False) or (str(res.get("result", "")).lower() == "registered")
-                    if not is_reg:
-                        pool.append({"device": d, "res": res, "num": num})
-                        break 
-                await asyncio.sleep(0.5)
-        except Exception: pass
-        await asyncio.sleep(3)
 
 # ═══════════════════════════════════════════════════════
 #  UTILITY FORMATTERS & MENUS
@@ -799,6 +751,43 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id  = update.effective_chat.id
     bot_token = ctx.bot.token
     user = update.effective_user
+    args = ctx.args
+
+    # 🔥 FIX 1: Referral Logic executed BEFORE Force-Join Check
+    ref_id = None
+    if args and args[0].startswith("ref_"):
+        try: ref_id = int(args[0].split("_")[1])
+        except: pass
+
+    if chat_id not in all_users:
+        all_users[chat_id] = {
+            "name": user.first_name,
+            "username": user.username or "",
+            "joined_at": datetime.now().strftime("%d %b %Y %I:%M %p"),
+            "verified": False,
+            "referrals": 0,
+            "coins": 0,
+            "vip_until": 0.0,
+            "otp_count": 0,
+            "custom_dbs": [],
+            "referred_by": None
+        }
+        
+        # Give rewards to referrer immediately
+        if ref_id and ref_id in all_users and ref_id != chat_id:
+            all_users[chat_id]["referred_by"] = ref_id
+            all_users[ref_id]["referrals"] += 1
+            all_users[ref_id]["coins"] += 10
+            
+            try: 
+                await ctx.bot.send_message(ref_id, f"🎉 **NEW REFERRAL!**\nKisi ne aapke link se join kiya hai.\n💰 **+10 Coins added!**\n📊 Total Referrals: {all_users[ref_id]['referrals']}")
+            except: pass
+            
+            if all_users[ref_id]["referrals"] % 20 == 0:
+                all_users[ref_id]["vip_until"] = time.time() + (24 * 3600)
+                try: await ctx.bot.send_message(ref_id, "🎉 **VIP UNLOCKED!**\nAapke 20 refers pure ho gaye! 24 Hours ka VIP Access mil gaya hai!", parse_mode="Markdown")
+                except: pass
+        save_user(chat_id)
     
     if not await check_force_join(ctx.bot, chat_id):
         join_kb = InlineKeyboardMarkup([
@@ -809,33 +798,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ])
         await update.message.reply_text("⚠️ **ACCESS DENIED**\n\nAapko bot use karne ke liye pehle hamare sabhi Channels aur Group join karne honge. Join karke 'I have joined' par click karein.", reply_markup=join_kb, parse_mode="Markdown")
         return
-
-    args = ctx.args
-    if chat_id not in all_users:
-        all_users[chat_id] = {
-            "name": user.first_name,
-            "username": user.username or "",
-            "joined_at": datetime.now().strftime("%d %b %Y %I:%M %p"),
-            "verified": True,
-            "referrals": 0,
-            "coins": 0,
-            "vip_until": 0.0,
-            "otp_count": 0,
-            "custom_dbs": [],
-            "referred_by": None
-        }
-        if args and args[0].startswith("ref_"):
-            try:
-                referrer_id = int(args[0].split("_")[1])
-                if referrer_id in all_users and referrer_id != chat_id:
-                    all_users[chat_id]["referred_by"] = referrer_id
-                    all_users[referrer_id]["referrals"] += 1
-                    if all_users[referrer_id]["referrals"] % 20 == 0:
-                        all_users[referrer_id]["vip_until"] = time.time() + (24 * 3600)
-                        try: await ctx.bot.send_message(referrer_id, "🎉 **CONGRATULATIONS!**\nAapke 20 refers pure ho gaye! Aapko **24 Hours ka VIP Access (Global Panels)** mil gaya hai!", parse_mode="Markdown")
-                        except: pass
-            except: pass
-        save_user(chat_id)
 
     user_focus.setdefault(bot_token, {}).pop(chat_id, None)
     chats_registry.setdefault(bot_token, set()).add(chat_id)
@@ -935,7 +897,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 ]
                 return await safe_edit(query, res_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
-            # 🛑 Added Cancel Button to Loading Screen 
             await safe_edit(
                 query, 
                 f"🔥 <b>SMART AUTO-CHECKER</b>\n━━━━━━━━━━━━━━━━━━\n📡 <i>Fetching ONLINE devices active in last 30 MINUTES...</i>", 
@@ -969,7 +930,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
             check_pool = fresh_devices[:100] 
             
-            # 🛑 Added Cancel Button to API Scanning Screen
             await safe_edit(
                 query, 
                 f"🔥 <b>SMART AUTO-CHECKER</b>\n━━━━━━━━━━━━━━━━━━\n📡 Scanning {len(check_pool)} Active Numbers...\n⚡ <i>Hitting APIs concurrently...</i>", 
@@ -1241,12 +1201,15 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         user_focus.setdefault(bot_token, {}).pop(chat_id, None)
         uinfo = users_db.get(chat_id, {})
         ref_count = uinfo.get("referrals", 0)
+        coins = uinfo.get("coins", 0)
         bot_user = await ctx.bot.get_me()
         ref_link = f"https://t.me/{bot_user.username}?start=ref_{chat_id}"
         
         msg = (
             "🎁 **REFER & EARN VIP ACCESS**\n━━━━━━━━━━━━━━━━━━\n"
-            f"👤 **Your Referrals:** {ref_count} / 20\n\n"
+            f"👤 **Your Referrals:** {ref_count} / 20\n"
+            f"💰 **Total Coins:** {coins}\n\n"
+            "Har referral pe aapko **10 Coins** milenge!\n"
             "20 dosto ko invite karein aur **24 Ghante ke liye Unlimited Global Panels** ka access paayein!\n\n"
             f"🔗 **Share Your Link:**\n`{ref_link}`"
         )
