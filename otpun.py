@@ -3,7 +3,7 @@
 ══════════════════════════════════════════════════════
   OTP PANEL BOT — PRIVATE ADMIN EDITION           
   Railway Cloud Optimized + Dummy Web Server + 24/7 Alive
-  Fixed Referral System (Pre-Force-Join) + Auto TXT Load
+  Live Cancel Scan + Multi-Reply (Concurrent) Fixed
   Credit/Configured by: Gemini AI
 ══════════════════════════════════════════════════════
 """
@@ -121,7 +121,6 @@ def load_local_txt_dbs():
         "All_Normal_URLs.txt", 
         os.path.join("Extracted_URLs", "All_Normal_URLs.txt")
     ]
-    
     for path in files_to_check:
         if os.path.exists(path):
             try:
@@ -130,9 +129,7 @@ def load_local_txt_dbs():
                         url = line.strip()
                         if url.startswith("http"):
                             loaded_urls.add(url)
-            except Exception as e:
-                pass
-                
+            except Exception: pass
     print(f"✅ Loaded {len(loaded_urls)} URLs from Local Text DBs")
     return list(loaded_urls)
 
@@ -168,7 +165,6 @@ def init_dirs():
 def load_data():
     global all_users, SETTINGS, DATABASES
     init_dirs()
-    
     local_dbs = load_local_txt_dbs()
     if local_dbs:
          existing_global = set(SETTINGS.get("global_panels", []))
@@ -275,11 +271,12 @@ def get_user_dbs(uinfo: dict) -> list:
         valid_urls.append(uinfo["custom_db"])
     return list(set(valid_urls))
 
+# 🔥 FIX: Reduced spam timeout to 0.2s for multi-reply support
 def is_spamming(user_id: int) -> bool:
     if user_id in ADMIN_IDS: return False
     now = time.time()
     last_click = user_cooldowns.get(user_id, 0)
-    if now - last_click < 1.0:  
+    if now - last_click < 0.2:  
         return True
     user_cooldowns[user_id] = now
     return False
@@ -798,7 +795,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     args = ctx.args
 
-    # 🔥 FIX 1: Referral Logic executed BEFORE Force-Join Check
     ref_id = None
     if args and args[0].startswith("ref_"):
         try: ref_id = int(args[0].split("_")[1])
@@ -818,7 +814,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "referred_by": None
         }
         
-        # Give rewards to referrer immediately
         if ref_id and ref_id in all_users and ref_id != chat_id:
             all_users[chat_id]["referred_by"] = ref_id
             all_users[ref_id]["referrals"] += 1
@@ -888,6 +883,13 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             except: pass
             return
 
+        # 🔥 FIX: Dedicated Cancel Scan Logic
+        if data == "cancel_scan":
+            if chat_id in pending_action and pending_action[chat_id].get("action") == "auto_check":
+                pending_action[chat_id]["status"] = "stopped"
+            await safe_edit(query, "🛑 **Scan Stopping...** Please wait.", parse_mode="Markdown")
+            return
+
         if data == "open_checker_menu":
             await safe_edit(query, "<b>Select Checker (Manual Bulk)</b>", reply_markup=get_checker_menu(prefix="chk_srv:"), parse_mode="HTML")
             return
@@ -904,6 +906,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
         if data.startswith("auto_fb:"):
             service = data.split(":")[1]
+            
+            # 🔥 Start Tracking For Cancellation
+            pending_action[chat_id] = {"action": "auto_check", "status": "running"}
             
             pool = PREFETCH_POOL.setdefault(service, [])
             seen_set = user_seen_unreg.setdefault(chat_id, set())
@@ -945,7 +950,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await safe_edit(
                 query, 
                 f"🔥 <b>SMART AUTO-CHECKER</b>\n━━━━━━━━━━━━━━━━━━\n📡 <i>Fetching ONLINE devices active in last 30 MINUTES...</i>", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="close_msg")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Scan", callback_data="cancel_scan")]]),
                 parse_mode="HTML"
             )
             
@@ -978,19 +983,28 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await safe_edit(
                 query, 
                 f"🔥 <b>SMART AUTO-CHECKER</b>\n━━━━━━━━━━━━━━━━━━\n📡 Scanning {len(check_pool)} Active Numbers...\n⚡ <i>Hitting APIs concurrently...</i>", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="close_msg")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Scan", callback_data="cancel_scan")]]),
                 parse_mode="HTML"
             )
             
-            tasks = [check_number_api(service, d.numbers[0]) for d in check_pool]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            for d, res in zip(check_pool, results):
-                if isinstance(res, dict) and not res.get("status") == "error":
-                    is_reg = res.get("registered", False) or res.get("is_registered", False) or (str(res.get("result", "")).lower() == "registered")
-                    if not is_reg:
-                        found_unreg, final_res, final_dev, final_num = True, res, d, d.numbers[0]
-                        break
+            # 🔥 FIX: Check cancellation status during loop
+            for i in range(0, len(check_pool), 15):
+                state = pending_action.get(chat_id, {})
+                if state.get("action") == "auto_check" and state.get("status") == "stopped":
+                    return await safe_edit(query, "❌ **Auto-Check Cancelled by User!**", parse_mode="Markdown")
+
+                batch = check_pool[i:i+15]
+                tasks = [check_number_api(service, d.numbers[0]) for d in batch]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                for d, res in zip(batch, results):
+                    if isinstance(res, dict) and not res.get("status") == "error":
+                        is_reg = res.get("registered", False) or res.get("is_registered", False) or (str(res.get("result", "")).lower() == "registered")
+                        if not is_reg:
+                            found_unreg, final_res, final_dev, final_num = True, res, d, d.numbers[0]
+                            break
+                if found_unreg: break
+                await asyncio.sleep(0.5)
                         
             if found_unreg:
                 seen_set.add(final_num)
@@ -1316,13 +1330,14 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 total = scan_progress.get("total", 0)
                 pct = int((scanned / total) * 100) if total > 0 else 0
                 
+                # 🔥 FIX: Hata diya yaha se Cancel button.
                 msg = (
                     f"⏳ **System is booting up and scanning panels!**\n\n"
                     f"Background me naye URLs load ho rahe hain...\n"
                     f"📊 **Progress:** {scanned} / {total} Panels Checked ({pct}%)\n\n"
                     f"Kripya thoda wait karein aur firse try karein."
                 )
-                await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="close_msg")]]), parse_mode="Markdown")
+                await update.message.reply_text(msg, parse_mode="Markdown")
             else:
                 await update.message.reply_text("❌ Aapke paas abhi koi active devices nahi hain. 'Add Custom Panel' se panel add karein ya VIP lein.")
             return
@@ -1747,16 +1762,16 @@ def main() -> None:
         .build()
     )
 
-    app.add_handler(CommandHandler("start",   cmd_start))
-    app.add_handler(CommandHandler("admin",   cmd_admin))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    # 🔥 FIX: Multi-Reply Active by passing block=False to Handlers
+    app.add_handler(CommandHandler("start",   cmd_start, block=False))
+    app.add_handler(CommandHandler("admin",   cmd_admin, block=False))
+    app.add_handler(CallbackQueryHandler(on_callback, block=False))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text, block=False))
     app.add_error_handler(global_error_handler)
 
     async def post_init(application: Application) -> None:
         load_data()
         
-        # 🔥 DUMMY WEB SERVER FOR RAILWAY (Anti-Crash)
         async def web_server():
             try:
                 app_web = web.Application()
